@@ -28,9 +28,11 @@ class CircularTimeGaugeCard extends HTMLElement {
       step: 15,
       name: "",
       mode: "time",
+      color: "",
       ...config,
     };
     this._percent = this._config.mode === "percent";
+    if (this._root && this._builtPercent !== this._percent) this._root = null; // mode changed: rebuild
     this._value = this._config.min;
     this._dragging = false;
     if (!this._root) this._build();
@@ -78,6 +80,31 @@ class CircularTimeGaugeCard extends HTMLElement {
     return h + ":" + String(mm).padStart(2, "0") + " " + ap;
   }
 
+  // Percent (dimmer) mode: 270-degree arc, 0..100 % of full brightness.
+  // SVG angles (degrees, clockwise from +x): start 135 (bottom-left) -> end 45 (bottom-right).
+  _pctPoint(pct) {
+    const a = ((135 + 2.7 * pct) * Math.PI) / 180;
+    return [50 + 25 * Math.cos(a), 32 + 25 * Math.sin(a)];
+  }
+
+  _pctForPointer(evt) {
+    const svg = this._svg;
+    const ctm = svg.getScreenCTM();
+    let cx, cy;
+    if (ctm) {
+      cx = ctm.a * 50 + ctm.c * 32 + ctm.e;
+      cy = ctm.b * 50 + ctm.d * 32 + ctm.f;
+    } else {
+      const r = svg.getBoundingClientRect();
+      cx = r.left + r.width / 2;
+      cy = r.top + r.height * (32 / 62);
+    }
+    let deg = (Math.atan2(evt.clientY - cy, evt.clientX - cx) * 180) / Math.PI;
+    let s = (((deg - 135) % 360) + 360) % 360; // 0..360 measured from arc start
+    if (s > 270) s = s > 315 ? 0 : 270; // dead zone at the bottom snaps to nearest end
+    return s / 2.7;
+  }
+
   _angleForValue(v) {
     const { min, max } = this._config;
     const t = (v - min) / (max - min || 1);
@@ -117,6 +144,21 @@ class CircularTimeGaugeCard extends HTMLElement {
 
   _updateUI() {
     if (!this._needle || !this._timeEl) return;
+    if (this._percent) {
+      const pct = Math.min(100, Math.max(0, Number(this._value) || 0));
+      const [x, y] = this._pctPoint(pct);
+      const [sx, sy] = this._pctPoint(0);
+      this._needle.setAttribute("cx", String(x));
+      this._needle.setAttribute("cy", String(y));
+      this._arcActive.setAttribute(
+        "d",
+        pct <= 0
+          ? "M " + sx + " " + sy + " L " + sx + " " + sy
+          : "M " + sx + " " + sy + " A 25 25 0 " + (pct * 2.7 > 180 ? 1 : 0) + " 1 " + x + " " + y
+      );
+      this._timeEl.textContent = Math.round(this._value) + "%";
+      return;
+    }
     const ang = this._angleForValue(this._value);
     const r = 38;
     const x = 50 + r * Math.cos(ang);
@@ -137,6 +179,7 @@ class CircularTimeGaugeCard extends HTMLElement {
       if (!this._dragging) return;
       ev.preventDefault();
       const e = ev.touches ? ev.touches[0] : ev;
+      if (this._percent) { this._setValue(this._pctForPointer(e), false); return; }
       let a = this._pointerAngle(e);
       if (a > 0) { if (Math.PI / 2 > a) a = 0; }
       else if (a >= Math.PI / 2) a = -Math.PI;
@@ -154,10 +197,14 @@ class CircularTimeGaugeCard extends HTMLElement {
     const onDown = (ev) => {
       this._dragging = true;
       const e = ev.touches ? ev.touches[0] : ev;
-      let a = this._pointerAngle(e);
-      if (a > 0) { if (Math.PI / 2 > a) a = 0; }
-      else if (a >= Math.PI / 2) a = -Math.PI;
-      this._setValue(this._valueForAngle(a), false);
+      if (this._percent) {
+        this._setValue(this._pctForPointer(e), false);
+      } else {
+        let a = this._pointerAngle(e);
+        if (a > 0) { if (Math.PI / 2 > a) a = 0; }
+        else if (a >= Math.PI / 2) a = -Math.PI;
+        this._setValue(this._valueForAngle(a), false);
+      }
       window.addEventListener("pointermove", onMove, { passive: false });
       window.addEventListener("pointerup", onUp);
       window.addEventListener("touchmove", onMove, { passive: false });
@@ -181,7 +228,9 @@ class CircularTimeGaugeCard extends HTMLElement {
 
   _build() {
     const SVG = "http://www.w3.org/2000/svg";
-    this._root = this.attachShadow({ mode: "open" });
+    this._root = this.shadowRoot || this.attachShadow({ mode: "open" });
+    this._root.innerHTML = "";
+    this._builtPercent = this._percent;
     const style = document.createElement("style");
     style.textContent =
       ":host{display:block;height:100%;min-height:100%;box-sizing:border-box;}" +
@@ -199,6 +248,15 @@ class CircularTimeGaugeCard extends HTMLElement {
       ".ends{font-size:6.5px;fill:var(--secondary-text-color);}" +
       ".hit{fill:transparent;stroke:transparent;stroke-width:28;cursor:pointer;}";
 
+    if (this._percent) {
+      const col = this._config.color || "#ffc107";
+      style.textContent = style.textContent
+        .replace(/rgba\(255,193,7,\.10\)/, "color-mix(in srgb," + col + " 12%,transparent)")
+        .replace(/rgba\(255,193,7,\.28\)/, "color-mix(in srgb," + col + " 32%,transparent)")
+        .replace(/rgba\(255,193,7,\.22\)/, "color-mix(in srgb," + col + " 25%,transparent)")
+        .replace(/#ffc107/g, col)
+        .replace("stroke-width:28", "stroke-width:30");
+    }
     const card = this._el(null, "div", { class: "card" });
     this._nameEl = this._el(null, "div", { class: "name" });
     this._timeEl = this._el(null, "div", { class: "time" }, this._percent ? "0%" : "12:00 AM");
@@ -207,38 +265,53 @@ class CircularTimeGaugeCard extends HTMLElement {
       viewBox: "0 0 100 62",
       preserveAspectRatio: "xMidYMid meet",
     });
-    this._svg.appendChild(
-      this._el(SVG, "path", {
-        class: "track",
+    if (this._percent) {
+      const [x0, y0] = this._pctPoint(0);
+      const [x1, y1] = this._pctPoint(100);
+      const d = "M " + x0 + " " + y0 + " A 25 25 0 1 1 " + x1 + " " + y1;
+      this._svg.appendChild(this._el(SVG, "path", { class: "track", d: d }));
+      this._arcActive = this._el(SVG, "path", { class: "active", d: "M " + x0 + " " + y0 + " L " + x0 + " " + y0 });
+      this._svg.appendChild(this._arcActive);
+      this._needle = this._el(SVG, "circle", { class: "thumb", cx: String(x0), cy: String(y0), r: "5.5" });
+      this._svg.appendChild(this._needle);
+      this._hit = this._el(SVG, "path", { class: "hit", d: d });
+      this._svg.appendChild(this._hit);
+      this._svg.appendChild(this._el(SVG, "text", { class: "ends", x: String(x0), y: "61", "text-anchor": "middle" }, "0%"));
+      this._svg.appendChild(this._el(SVG, "text", { class: "ends", x: String(x1), y: "61", "text-anchor": "middle" }, "100%"));
+    } else {
+      this._svg.appendChild(
+        this._el(SVG, "path", {
+          class: "track",
+          d: "M 12 50 A 38 38 0 0 1 88 50",
+        })
+      );
+      this._arcActive = this._el(SVG, "path", {
+        class: "active",
+        d: "M 12 50 A 38 38 0 0 1 12 50",
+      });
+      this._svg.appendChild(this._arcActive);
+      this._needle = this._el(SVG, "circle", {
+        class: "thumb",
+        cx: "12",
+        cy: "50",
+        r: "5.5",
+      });
+      this._svg.appendChild(this._needle);
+      this._hit = this._el(SVG, "path", {
+        class: "hit",
         d: "M 12 50 A 38 38 0 0 1 88 50",
-      })
-    );
-    this._arcActive = this._el(SVG, "path", {
-      class: "active",
-      d: "M 12 50 A 38 38 0 0 1 12 50",
-    });
-    this._svg.appendChild(this._arcActive);
-    this._needle = this._el(SVG, "circle", {
-      class: "thumb",
-      cx: "12",
-      cy: "50",
-      r: "5.5",
-    });
-    this._svg.appendChild(this._needle);
-    this._hit = this._el(SVG, "path", {
-      class: "hit",
-      d: "M 12 50 A 38 38 0 0 1 88 50",
-    });
-    this._svg.appendChild(this._hit);
-    this._svg.appendChild(
-      this._el(SVG, "text", { class: "ends", x: "10", y: "60", "text-anchor": "middle" }, this._percent ? String(this._config.min) + "%" : "12 AM")
-    );
-    this._svg.appendChild(
-      this._el(SVG, "text", { class: "ends", x: "50", y: "14", "text-anchor": "middle" }, this._percent ? "50%" : "12 PM")
-    );
-    this._svg.appendChild(
-      this._el(SVG, "text", { class: "ends", x: "90", y: "60", "text-anchor": "middle" }, this._percent ? String(this._config.max) + "%" : "12 AM")
-    );
+      });
+      this._svg.appendChild(this._hit);
+      this._svg.appendChild(
+        this._el(SVG, "text", { class: "ends", x: "10", y: "60", "text-anchor": "middle" }, this._percent ? String(this._config.min) + "%" : "12 AM")
+      );
+      this._svg.appendChild(
+        this._el(SVG, "text", { class: "ends", x: "50", y: "14", "text-anchor": "middle" }, this._percent ? "50%" : "12 PM")
+      );
+      this._svg.appendChild(
+        this._el(SVG, "text", { class: "ends", x: "90", y: "60", "text-anchor": "middle" }, this._percent ? String(this._config.max) + "%" : "12 AM")
+      );
+    }
     gauge.appendChild(this._svg);
     card.appendChild(this._nameEl);
     card.appendChild(this._timeEl);
@@ -257,5 +330,5 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "circular-time-gauge-card",
   name: "Circular Time Gauge",
-  description: "Large arc gauge for minutes-from-midnight (12-hour clock) or percent (mode: percent)",
+  description: "Large arc gauge: minutes-from-midnight (12-hour clock) or, with mode: percent, a 270-degree 0-100% dimmer arc (optional color)",
 });
