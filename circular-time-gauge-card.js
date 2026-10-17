@@ -27,8 +27,10 @@ class CircularTimeGaugeCard extends HTMLElement {
       max: 1425,
       step: 15,
       name: "",
+      mode: "time",
       ...config,
     };
+    this._percent = this._config.mode === "percent";
     this._value = this._config.min;
     this._dragging = false;
     if (!this._root) this._build();
@@ -66,6 +68,7 @@ class CircularTimeGaugeCard extends HTMLElement {
   }
 
   _fmt(mins) {
+    if (this._percent) return Math.round(mins) + "%";
     const m = ((Math.round(mins) % 1440) + 1440) % 1440;
     let h = Math.floor(m / 60);
     const mm = m % 60;
@@ -103,7 +106,8 @@ class CircularTimeGaugeCard extends HTMLElement {
     this._updateUI();
     if (commit) {
       if (this._hass) {
-        this._hass.callService("number", "set_value", {
+        const domain = String(this._config.entity).split(".")[0];
+        this._hass.callService(domain === "input_number" ? "input_number" : "number", "set_value", {
           entity_id: this._config.entity,
           value: this._value,
         });
@@ -197,7 +201,7 @@ class CircularTimeGaugeCard extends HTMLElement {
 
     const card = this._el(null, "div", { class: "card" });
     this._nameEl = this._el(null, "div", { class: "name" });
-    this._timeEl = this._el(null, "div", { class: "time" }, "12:00 AM");
+    this._timeEl = this._el(null, "div", { class: "time" }, this._percent ? "0%" : "12:00 AM");
     const gauge = this._el(null, "div", { class: "gauge" });
     this._svg = this._el(SVG, "svg", {
       viewBox: "0 0 100 62",
@@ -227,13 +231,13 @@ class CircularTimeGaugeCard extends HTMLElement {
     });
     this._svg.appendChild(this._hit);
     this._svg.appendChild(
-      this._el(SVG, "text", { class: "ends", x: "10", y: "60", "text-anchor": "middle" }, "12 AM")
+      this._el(SVG, "text", { class: "ends", x: "10", y: "60", "text-anchor": "middle" }, this._percent ? String(this._config.min) + "%" : "12 AM")
     );
     this._svg.appendChild(
-      this._el(SVG, "text", { class: "ends", x: "50", y: "14", "text-anchor": "middle" }, "12 PM")
+      this._el(SVG, "text", { class: "ends", x: "50", y: "14", "text-anchor": "middle" }, this._percent ? "50%" : "12 PM")
     );
     this._svg.appendChild(
-      this._el(SVG, "text", { class: "ends", x: "90", y: "60", "text-anchor": "middle" }, "12 AM")
+      this._el(SVG, "text", { class: "ends", x: "90", y: "60", "text-anchor": "middle" }, this._percent ? String(this._config.max) + "%" : "12 AM")
     );
     gauge.appendChild(this._svg);
     card.appendChild(this._nameEl);
@@ -253,5 +257,5 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: "circular-time-gauge-card",
   name: "Circular Time Gauge",
-  description: "Large arc gauge for minutes-from-midnight with 12-hour clock readout",
+  description: "Large arc gauge for minutes-from-midnight (12-hour clock) or percent (mode: percent)",
 });
